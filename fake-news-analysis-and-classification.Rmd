@@ -1,0 +1,598 @@
+---
+title: "Exploratory Analysis and fake news classification on Buzzfeed News"
+author: "Kumud Chauhan"
+date: "3/31/2019"
+output:
+  html_document:
+    number_sections: true
+    toc: true
+    fig_width: 7
+    fig_height: 4.5
+    theme: readable
+    highlight: tango
+---
+
+
+# INTRODUCTION
+
+FakenewsNet is a repository for an ongoing data collection project for fake news research at ASU. The repository consists of comprehensive dataset of Buzzfeed news and politifact which contains two separate datasets of real and fake news. The FakenewsNet consists of multi-dimension information that not only provides signals for detecting fake news but can also be used for researches such as understanding fake news propagation and fake news intervention. However, the repository is very wide and multi-dimensional, In this project, we perform a detailed analysis on Buzzfeed news dataset.
+
+The Buzzfeed news dataset comprises a complete sample of news published in Facebook from 9 news agencies over a week close to the 2016 U.S. election from September 19 to 23 and September 26 and 27. Every post and the linked article were fact-checked claim-by-claim by 5 BuzzFeed journalists. There are two datsets of Buzzfeed news one dataset of fake news and another dataset of real news in the form of csv files, each have 91 observations and 12 features/variables. 
+
+The Buzzfeed news dataset consists of two datasets which has following main  features:
+
+`id`: the id assigned to the news article webpage Real if the article is real or fake if reported fake.
+
+`title` : It refers to the headline that aims to catch the attention of readers and relates well to the major of the news topic. 
+
+`text` : Text refers to the body of the article, it elaborates the details of news story. Usually there is a major claim which shaped the angle of the publisher and is specifically highlighted and elaborated upon.
+
+`source`: It indicates the author or publisher of the news article.
+
+`images`: It is an important part of body content of news article, which provides visual cues to frame the story.
+
+`movies`: It is also an important part of news article, a link to video or a movie clip included in a article, also provides visual cues to frame the story.
+
+
+The two main features we care about are the source of the fake news and the language used in the fake news. In particular, we are interested in finding sources who published fake news and finding words which are more associated with one category than other. For finding the sources, we compare the proporation of the fake news reported by a particular news source and for finding the category associated words, we perform chi square test on the text of title and body of the articles.
+
+This project is divided into two parts:  (1) Exploratory Data Analysis (2) Classification The goal of second part is to build a classifer that can detect fakenews. We use three different classifiers to classify documents into real/fake news categories. 
+
+### Note to the reader:
+1. In this analysis, we don't consider features like url, canonical link, authors, publish_date, and metedata because these usually provide redundant information which we can get from other main variables and do not add more value to our analysis.
+2. The main purpose of this analysis is to develop methods to analyze fake news versus real news. Since, we analyze a small dataset, containing some news related to 2016 U.S. presidential election, the conclusions might not be generalizable to all news categories. However, we believe that our methods can be applied to any textual dataset to obtain insights. 
+
+```{r message=FALSE}
+# Import libraries
+library(tm) # for NLP
+library(plyr) #  for pre-processing
+library(tidyverse) # for pre-processing and visualisation
+library(reshape2) # for melt function
+library(e1071) # for Naive Bayes classifier
+library(glmnet) # for Logistic Regression classifier
+library(randomForest) # for Random Forest classifier
+
+```
+
+### Loading Buzzfeed datasets:
+```{r load_datasets}
+setwd("C:/Users/DELL/Desktop/TOI Trend Analysis")
+buzzfeed_real <- read_csv('./FakeNewsNet/BuzzFeed_real_news_content.csv')
+buzzfeed_fake <- read_csv('./FakeNewsNet/BuzzFeed_fake_news_content.csv')
+```
+
+### Pre- processing / Feature Engineering
+
+First, we need to combine these two dataframes into a single dataframe and create a new variable `type` which contains the news type as real or fake.
+
+```{r}
+# merge data frames and delete old data frames 
+buzzfeed_df = rbind(buzzfeed_real, buzzfeed_fake)
+
+# adding new column of type for categorising document as real or fake 
+buzzfeed_df$type <- sapply(strsplit(buzzfeed_df$id, "_"), head,  1)
+
+write.csv(buzzfeed_df, "my_df.csv")
+
+```
+
+check the dimensions and summary of the datset
+```{r}
+# check the dimensions of the datset
+dim(buzzfeed_df)
+
+# check the summary of dataset
+summary(buzzfeed_df)
+```
+The datset consists of 182 rows and 13 columns and the structure of all variables is char and it seems that it is a clean datset which does not contains na values.
+
+```{r}
+# select necessary columns from the dataframe for analysis
+buzzfeed_df <- buzzfeed_df %>% select(c("id","title","text","source","type","images","movies"))
+buzzfeed_df
+```
+On merging the dataset into one dataset, we select variables of our interest only for analysis. 
+
+We are changing the variable movies and images into categorical variables as whether the news article has image or not. Similarly, whether the news article has image or not. If the link to movies and images are available then it is 1 otherwise 0.
+
+```{r}
+# movies and images as logical, if available then 1 and if not then 0
+buzzfeed_df$movies<- ifelse(is.na(buzzfeed_df$movies) , 0, 1)
+buzzfeed_df$images<- ifelse(is.na(buzzfeed_df$images) , 0, 1)
+# We assume that "addictinginfo.org" is one news source with different url or source
+# Hence,combining all sources of "addictinginfo.org" into one for our analysis.
+buzzfeed_fake$source <- gsub("www.addic|author.addic", "addic",buzzfeed_fake$source)
+buzzfeed_real$source <- gsub("www.addic|author.addic", "addic",buzzfeed_real$source)
+```
+
+# EDA
+
+## Real vs Fake news source analysis
+
+### Which sources publish real news?
+```{r}
+buzzfeed_real$source <- with(buzzfeed_real, reorder(source, source, function(x) length(x)))
+ggplot(data = buzzfeed_real) +
+  ggtitle("Source count of real news in Buzzfeed") +
+  geom_bar(aes(x= source),fill = "green") + coord_flip() +theme(axis.text.y = element_text(hjust = 1, angle = 0))
+```
+
+From the above plot we observed that,the `politi.co` reports maximum real news followed by cnn.it with a count of 32 and 23 respectively.
+
+### Which sources publish maximum fake news?
+```{r}
+buzzfeed_fake$source <- with(buzzfeed_fake,reorder(source, source, function(x) length(x))) 
+ggplot(buzzfeed_fake) +
+   ggtitle("Source count of fake news in Buzzfeed") +
+  geom_bar(aes(x=source),fill = "red") + coord_flip()
+```
+
+Above plot shows that,the `rightwingsnews` reports maximum fakenews with a count of 18. Also, the number of fake news sources are more than the number of real news sources.
+
+It is interesting to know that there are some news which are reported and categorised as fake but their source is unknown. We do not remove such news because it shows a unique perspective that while some fake news came from unknown sources, all real news came from well known sources.
+
+Since there are some sources which report real as well as fake news. Now, we focus on whether a particular news source reports more fake news than real news. For this analysis, we find all sources which reports both fake and real news, and then plot news counts in both categories.
+
+### Is there any common source which reports both real and fake news?
+```{r}
+# Check for common sources of fake news and real news
+common_source <- intersect(buzzfeed_real$source,buzzfeed_fake$source)
+source_type_counts = table(buzzfeed_df$source, buzzfeed_df$type)
+
+# Bar chart of source 
+ggplot(buzzfeed_df[which(buzzfeed_df$source %in% common_source),]) + 
+  geom_bar(aes(x = source,fill = type),position = "dodge") + coord_flip() +
+  ggtitle("Common source of Real and Fake news in Buzzfeed") 
+```
+
+There are eight common sources of real and fake news. This is interesting that the fake news are more reported by these sources as compared to real news. The `rightwingnews` reports maximum fake news but it also reports some real news. Approximaltely, two third of total news reported by rightwings are fake.
+
+```{r}
+# Transform the data
+buzzfeed_df_common <- buzzfeed_df %>%
+  filter(source %in% common_source) %>%
+  count(source, type) %>%
+  mutate(type = fct_relevel(type, "real")) %>%
+  mutate(n = if_else(type == "real", n, -n))
+
+# Create a two-sided bar plot
+ggplot(buzzfeed_df_common, aes(x = reorder(source, n), y = n, fill = type)) +
+  geom_bar(stat="identity", position="identity") +
+  ylim(- max(buzzfeed_df_common$n), max(buzzfeed_df_common$n)) +
+  scale_y_continuous(breaks = seq(- max(buzzfeed_df_common$n), max(buzzfeed_df_common$n), 1)) +
+  coord_flip() +
+  theme(axis.text.y = element_text(hjust = 1)) +
+  ggtitle("Common source of real and fake news in Buzzfeed")
+```
+
+
+On the other hand, if we look at the `freedomdaily` which is the second largest fake news reporting source, barely reports the real news. 
+`addictinginfo.org` is the only single common source which reports real news more than fake news but the total number of news reports are very low.
+
+### Do sources include movies in the news to get more attention?
+```{r}
+# movies
+ggplot(buzzfeed_df) +
+  geom_bar(aes(x= factor(movies), fill = type),position = "dodge")  +
+  xlab("Media linked to news") + ylab("counts") + 
+  theme_minimal() + ggtitle("News category wise movies") 
+```
+
+From the above plot, We observe that most of the news are reported without including the movie clips. There are very little articles which includes movie clips, but, it is interesting to know that sources do not include the movie clips related to the real news compared to fake news. This variable did not provide much useful information in our analysis.
+
+May be we can get some more information from images in the news article.
+
+### Do sources include images in all the news as images provides visual cues?
+```{r}
+# images
+ggplot(buzzfeed_df) +
+  geom_bar(aes(x= as.factor(images), fill = type),position = "dodge")+
+  xlab("Images in news") + ylab("counts") + 
+  theme() + ggtitle("News category wise images") 
+
+```
+
+From the above plot we observe that all the real news sources included images in their articles. We may say that images acts as a proof to there news. However, this variable gives us some insights that images are important part of real news articles. The images and movies variables does not gave us much details to strenghen our analysis. Let's move to the other variable of interest and do some text mining.
+
+
+## A closer look at title and body of the news articles
+
+### preprocess_corpus() function for text cleaning. It performs following operations and return clean text corpus.
+1. Convert text to lower case 
+2. Remove Numbers from the text corpus.
+3. Remove punctuation from the text corpus.
+4. Remove some special characters such as '<', '...' from the text 
+5. Remove english stopwords.
+6. Remove common news source names from text corpus.
+7. Stemming words to root words
+8. Remove extra whitespaces from the text corpus.
+
+```{r}
+clean_text <- function(x){ 
+  gsub("…|⋆|–|‹|”|“|‘|’", " ", x) 
+}
+
+preprocess_corpus <- function(corpus){
+  # Convert the text to lower case
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  # Remove numbers
+  corpus <- tm_map(corpus, removeNumbers)
+  # Remove punctuations
+  corpus <- tm_map(corpus, removePunctuation)
+  # Remove special characters from text
+  corpus <- tm_map(corpus, clean_text)
+  # Remove english common stopwords
+  corpus <- tm_map(corpus, removeWords, stopwords("english"))
+  # Remove name of newspapers from the corpus
+  corpus <- tm_map(corpus, removeWords, c("eagle rising","freedom daily"))
+  # 'stem' words to root words
+  corpus <- tm_map(corpus,stemDocument)
+  # Eliminate extra white spaces
+  corpus <- tm_map(corpus, stripWhitespace)
+  return (corpus)
+}
+
+```
+
+Now, we have a clean text corpus, we are interested in those words which are associated with one news category. For this analysis, we perform chi square test.
+
+### find_category_representative_words_using_chi_sq() function to find top 20 category reprsentative words:
+
+This function takes three arguments as inputs: a document term frequency matrix, categories(fake or real) and top_n words.
+We first perform chi square test to check association of a word with fake and real category. Then, we sort all words on the basis of chi square statistics and select top n words. This function returns term frequency for selected top words in real and fake news categories.
+```{r message=FALSE, warning=FALSE}
+
+find_category_representative_words_using_chi_sq <- function(dtf_matrix, categories, top_n=20){
+  dtm_df <- data.frame(dtf_matrix)
+  # find top features using chi-sq test 
+  chi2vals <- apply(dtf_matrix, 2, function(x){
+    chisq.test(as.numeric(x), categories)$statistic
+  })
+  features_subset <- names(sort(chi2vals, decreasing = TRUE))[1:top_n]
+  
+  # Compute term frequency for top terms in both categories 
+  dtm_df$NewsType <- categories
+  cat_freq_df <- dtm_df %>% group_by(NewsType) %>% summarise_each(funs(sum))
+  top_words_freq <- cat_freq_df[, c(features_subset, "NewsType")]
+  return (top_words_freq)
+}
+
+```
+
+### Analysis on Buzzfeed news title (unigrams)
+
+```{r message=FALSE, warning=FALSE}
+# Buzzfeed title corpus
+title_corpus <- Corpus(VectorSource(buzzfeed_df$title))
+# convert title corpus to document term matrix
+title_dtm <- DocumentTermMatrix(preprocess_corpus(title_corpus))
+title_dtm_matrix <- as.matrix(title_dtm)
+# finding top 20 words in the news title for both categories
+title_top_words_freq <- find_category_representative_words_using_chi_sq(title_dtm_matrix,buzzfeed_df$type,20)
+# ploting category wise term frequency of the top 20 discriminatory words in the news title 
+ggplot(melt(title_top_words_freq),aes(x =variable, y=value,fill = NewsType)) + geom_col(position = "dodge") + coord_flip() + xlab("Top 20 words") + ylab("Term Frequency of words") + 
+  theme() + ggtitle("Most discriminatory words in the title of news") 
+
+```
+
+We use preprocess_corpus() function to process the text of the news title, then convereted title corpus into document term matrix. We call  find_category_representative_words_using_chi_sq() function and pass document term matrix of title (title_dtm_matrix), news type category (buzzfeed_df$type) and 20 for top_n words.
+
+This function returns us the top 20 representative words in the news title for both categories i,e. real news and fake news. We plot the term frequency of  such words in both categories.
+
+Plot shows that some words like `muslim`, `isi`,`refuge`,`white`,`hillari` are representative of fake news whereas words like `presidenti`,`shoot`, `bomb`,`debat`,`state`, `donald`, `trump` are representative of real news. 
+
+Do words like `muslim`, `refuge`,`white`,`isi` are included in the news title just to get more attention? Or do the title with these words act like clickbaits?
+
+### Analysis on Buzzfeed news article body (unigrams)
+
+After analyzing the title, we analyze the text body of the news articles. We are interested in finding top 20 representative words of fake news and real news in the body of the news article.
+Also, we are interested to know whether words in the title are also associated in the text body of the same news category or different news category. For example, "hillari", "muslim" are only representative words of fake news title or they discriminate in the text body as well?
+
+We perform same steps by calling preprocess_corpus() function on the body of the news article and then convert the body_corpus into the body_dtm_matrix and then find top 30 words in the text body which are the representative words of each news category by calling find_category_representative_words_using_chi_sq() function on the body_dtm_matrix, category wise.
+We plot these words to visualise the high frequency words associated with fake and real news.
+
+```{r message=FALSE, warning=FALSE}
+# Buzzfeed text body corpus
+body_corpus <- Corpus(VectorSource(buzzfeed_df$text))
+# convert body corpus to document term matrix
+body_dtm <- DocumentTermMatrix(preprocess_corpus(body_corpus))
+body_dtm_matrix <- as.matrix(body_dtm)
+# finding top 30 words in the news body for both categories
+body_top_words_freq <- find_category_representative_words_using_chi_sq(body_dtm_matrix,buzzfeed_df$type,30)
+# ploting category wise term frequency of the top 30 discriminatory words in the news article body
+ggplot(melt(body_top_words_freq),aes(x =variable, y=value,fill = NewsType)) + 
+  geom_col(position = "dodge") + coord_flip() + xlab("Top 30 words") + ylab("Term Frequency of words") + 
+  theme() + ggtitle("Most discriminatory words in the body of news article") 
+```
+
+From the above plot, we notice that words like `hillari`, `clinton`, `obama` are  the discriminatory words in the news body. Though these words appear in real news as well but they are more associated with fake news. The words like `donald`, `trump`,`said`,`stori`,`think`,`need`, are more associated with real news.
+We also observe that the words related to social media like `twitter`, `facebook` are also more associated with the fake news. We may say that facebook and twitter are included in the text body of fake news to catch reader's attention as most of the people use social media.
+
+### Analysis on title length
+
+After the analysis on the words of title and news body, we are interested to know that whether the title length is also a discriminatory feature/factor between fake and real news category.
+
+#### Do the title length of fake news title is smaller than the real news title?
+First we computed the length of news title and then make a dataframe of title length with news category. 
+```{r}
+# length of title for histogram
+title_length <- rowSums(title_dtm_matrix)
+# data frame of title length with categories
+tl_df <- data.frame(title_length, buzzfeed_df$type)
+
+# perform t-test
+t.test(tl_df[tl_df$buzzfeed_df.type == "Real",]$title_length, tl_df[tl_df$buzzfeed_df.type == "Fake",]$title_length)
+
+# plotting histogram of title length
+ggplot(tl_df ,aes(x = title_length, fill = buzzfeed_df.type)) +
+  geom_density(alpha=0.5) +
+  guides(fill=guide_legend(title="News type")) + 
+  xlab("Title length") + ylab("Density") + theme() + 
+  ggtitle("Density distribuiton of title length for real and fake news") 
+```
+
+We observe a statistical significant difference (p-value = 0.01583) between the length of news title of real and fake news. The title length of fake news is slighly larger than the real news. Fake news title length distribution is centered with mean of 7.83, while the center of distribution of title length of real news is slightly skewed towards right with a mean of 7.02. The t-test gives us evidence that the length of real news title is significantly shorter than the fake news title.
+
+### Analysis on Bigrams in the body of news articles.
+
+So far, we have done analysis on the unigrams of article. We remove some common words by using stopwords and stemming. Now, we are interested to anlayse the phrases used in the text body of the news article. 
+
+We write a function for bigram which tokenize the bigrams and we used VCorpus instead of simple corpus. The Vcorpus is the volatile corpus and we do not stem the words and we do not remove common english words as it may change the order or sequence of words in the phrase. We may lose some important phrases if we do so.
+
+```{r}
+# function to tokenize bigrams
+BigramTokenizer <-
+  function(x)
+    unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)
+# corpus for bigrams
+corpus <- VCorpus(VectorSource(buzzfeed_df$text))
+# corpus to document term matrix of bigrams
+bigram_matrix <- DocumentTermMatrix(corpus, control = list(tokenize = BigramTokenizer))
+# sort frequency of bigrams in decreasing order to give high frequency phrases
+bigram_freq <- sort(colSums(as.matrix(bigram_matrix)), decreasing=TRUE)
+```
+
+Now, we have the list of all bigrams , but we are interested in finding top bigram, also we do not want to include the phrases which has common english words. So we write a function find_top_bigram() which gives us a list of top n bigrams. Using this function we find the top 20 phrases in the text body of the news articles. We create a subset which includes only the top 20 phrase and transform that into a dataframe which consists of the phrases and their frequency in both categories.
+
+
+```{r}
+find_top_bigram <- function(bigrams, top_n){
+  top_bigram_list <- c()
+  for(bigram in bigrams){
+    unigrams <- strsplit(bigram," ")
+    if(!(unigrams[[1]][1] %in% stopwords("en") | unigrams[[1]][2]  %in% stopwords("en"))){
+      top_bigram_list <- c(top_bigram_list, bigram)
+    }
+    if (length(top_bigram_list) ==top_n){
+      break
+    }
+  }
+  return (top_bigram_list)
+}
+features_subset <- find_top_bigram(names(bigram_freq), 20)
+dtm_bigram_df <- data.frame(as.matrix(bigram_matrix[, intersect(colnames(bigram_matrix),features_subset)]))
+dtm_bigram_df$NewsType <- buzzfeed_df$type
+cat_freq_bf_df <- dtm_bigram_df %>% group_by(NewsType) %>% summarise_each(funs(sum))
+```
+
+#### Visualising top 20 bigrams in real and fake news. Are there some common phrase in real as well as fake news?
+```{r}
+# plot high frequency bigrams in the body of news articles.
+ggplot(melt(cat_freq_bf_df),aes(x =variable, y=value,fill = NewsType)) + 
+  geom_col(position = "dodge") + coord_flip() + xlab("bigrams") + ylab("bigrams_frequency") + 
+  theme() + ggtitle("High frequency bigrams in the body of news article") 
+```
+
+```{r}
+
+```
+
+The above plot shows the top 20 categroy wise, most frequent phrase used in the text of news article. The `donald.trump` is the most frequent phrase in the real news and `hillary.clinton ` is the most frequent phrase in the fake news.
+Some phrase like `young.adults`, `clinton.foundation`,`down..hawkins` `adults.need`, are used in both type of news but are the most frequent phrase in fake news compared to real news. And, phrase like `barack.obama`,`new.york`,`united states` are more widely used in real news articles than fake news.
+
+# Fake/Real news classification
+
+In this part, we build three different classifiers that classfies the news as `Real` or `Fake` on the basis of `text` as feature, the outcome and feature variables of them are as follows:
+1. The outcome variable is the  news category and the features are terms used in the title of the article of news.
+2. The outcome variable is the  news category and the features are terms used in the body of the article of news.
+3. The outcome variable is the  news category and the features are combined terms used in the title and body of the article of news. 
+
+## Train and test data split
+First, we split our data into training and test dataset on the proportion of 75% as training dataset and 25% as test dataset. We set seed so that we get same result splkit data.
+```{r}
+set.seed(123)
+n_obs <- nrow(buzzfeed_df)
+prop_split <- .75
+training_index <- sample(1:n_obs, round(n_obs * prop_split))
+```
+## Fake news detection from `title` of the news article:
+
+Here, we use title document term matrix (title_dtm) as our feature matrix and build a classifier. The title dtm consists of all the unique terms of title and is a large matrix. If we inspect some documents of title_dtm we found that there are lots of zeroes and the matrix is sparse.
+
+```{r}
+inspect(title_dtm[100:105,100:105]) # 100% sparsity
+```
+This means that we probably have a lot of terms in the title as well as body of the articles which are less useful as predictors for our prediction model. The number of terms is an issue for two main reasons:
+
+1. One is computational: More terms means more independent variables, which usually means it takes more time to build our models.
+2. Second is generalizability: The other is that in building models the ratio of independent variables to observations will affect how well the model will generalize. We have very less number of observations so remove those words which are present less.
+
+To make dtm denser we use `removeSparseTerms()` function that takes two arguments, one is the dtm matrix and other is the sparsity threshold. We set sparse limit `0.997` for title dtm which means it will retain only those terms that appear in `0.3%` documents of dtm. If we set sparse limit 0.97 it will retain only 24 terms in the matrix which appear in 3% title of documents and drops all other terms.
+
+```{r}
+# Install required package if not available
+if (!require("alluvial")) install.packages("alluvial")
+library(alluvial)
+
+# Sample data (assuming source categories are identified)
+source <- c("Buzzfeed", "Source A", "Source B", "Source A", "Buzzfeed", "Source C")
+type <- c("Real", "Fake", "Real", "Fake", "Fake", "Real")
+
+# Create data frame
+data <- data.frame(source = source, type = type)
+
+# Define flow between source and type
+flow <- flowTable(~ source + type, data = data)
+
+# Create Sankey chart
+sankeyPlot(flow, nodeLabels = "source", fontSize = 12)
+```
+
+
+```{r}
+# Remove sparse terms 
+sparse_title_dtm <- removeSparseTerms(title_dtm, .997) # 750 terms
+sparse_title_dtm 
+title_dtm <- as.matrix(sparse_title_dtm)
+# set train and test set for title dtm
+y_true <- as.matrix(buzzfeed_df$type)
+x_train <- title_dtm[training_index, ]
+x_test <- title_dtm[-training_index, ]
+```
+
+### Naive Bayes Classifier as Base line model
+```{r}
+nb_title <- naiveBayes(x=x_train , y=as.factor(y_true[training_index]))
+predicted_rf_title <- predict(nb_title, x_test)
+accuracy_nb_title <- sum(y_true[-training_index] == predicted_rf_title)/ length(predicted_rf_title)
+accuracy_nb_title
+```
+The accuracy of Naive Bayes classifier on title dtm is only 54% which means that, there are only `54%` news in the test dataset that the classifier predicts correctly. The Naive Bayes is very simple model, to improve accuracy we train second model.
+
+
+### Logistic Regression Classifier 
+```{r}
+glm_fit_title <- glmnet(x_train , y_true[training_index], family = "binomial")
+predicted_glm_title <- predict(glm_fit_title, x_test, type = "class")
+accuracy_glm_title <- sum(y_true[-training_index] == predicted_glm_title)/ length(predicted_glm_title)
+accuracy_glm_title
+```
+We observe that logistic regression perform better than Naive Bayes classifier on title dtm with an accuracy of 61%. To improve accuracy we train mofre complex model Random Forest. 
+
+### Random Forest Classifier 
+
+We chose 50 trees for random forest classifier. We can increase the complexity by incresaing the number of trees but it may cause overfitting as the number of obesrvations are very less.
+
+```{r}
+set.seed(123)
+rf_title <- randomForest(x=x_train, y=as.factor(y_true[training_index]),ntree = 50)
+rf_title
+predicted_rf_title <- predict(rf_title, newdata=x_test)
+accuracy_rf_title <- sum(y_true[-training_index] == predicted_rf_title)/ length(predicted_rf_title)
+accuracy_rf_title 
+```
+The accuracy of random forest classifier is 65% which is better than logistic regression and Naive Bayes classifier on the terms used in the title of news.
+
+## Fake news detection from `body` of the news article:
+
+We build classification model that can classify the news on the basis of terms used in the body of the news articles. The `body dtm` is a very large matrix having 7042 columns, we cannot use all these columns as our features so ,We set a sparsity threshold of `0.97`and retain only 1337 terms that appear in `3%` documents.
+
+```{r}
+# Let's remove some terms that don't appear very often and making body_dtm denser
+sparse_body_dtm <- removeSparseTerms(body_dtm, 0.97) # 1337 terms
+sparse_body_dtm
+body_dtm <- as.matrix(sparse_body_dtm)
+# set train and test set for body dtm
+y_true <- as.matrix(buzzfeed_df$type)
+x_train_body <- body_dtm[training_index,]
+x_test_body <- body_dtm[-training_index, ]
+```
+
+### Naive Bayes Classifier as Base line model
+```{r}
+nb_body <- naiveBayes(x=x_train_body , y=as.factor(y_true[training_index]))
+predicted_naive_body <- predict(nb_body, x_test_body)
+accuracy_naive_body <- sum(y_true[-training_index] == predicted_naive_body)/ length(predicted_naive_body)
+accuracy_naive_body
+```
+The accuracy of Naive Bayes is 54%,let's train logistic regression model and compare the accuracy.
+
+### Logistic Regression Classifier 
+```{r}
+glm_fit_body <- glmnet(x_train_body , y_true[training_index], family = "binomial")
+predicted_glm_body <- predict(glm_fit_body, x_test_body, type = "class")
+accuracy_glm_body <- sum(y_true[-training_index] == predicted_glm_body)/ length(predicted_glm_body)
+accuracy_glm_body 
+```
+The logistic regression performes better than Naive Bayes classifier with 65% accuracy. For further improvement let's build random forest model.
+
+### Random Forest Classifier 
+```{r}
+set.seed(123)
+rf_body <- randomForest(x=x_train_body, y=as.factor(y_true[training_index]))
+rf_body
+predicted_rf_body <- predict(rf_body, newdata=x_test_body)
+accuracy_rf_body <- sum(y_true[-training_index] == predicted_rf_body)/ length(predicted_rf_body)
+accuracy_rf_body
+```
+We observe that the random forest is better than other two model with an accuracy of 74%.
+
+So far we have classified the news on the basis of terms appear in the title or the text of the news article. We want to build a model that can detect the fake news with the terms that appear either in the title or body of the news article.
+We combined both the dtm and make a common feature matrix to know whether using this feature matrix improves the accuracy of the models. 
+
+## Fake news detection using terms appearing either in `title` or `body` of the news article:
+```{r}
+# combine title and body terms as feature matrix
+title_body_dtm <- body_dtm
+common_features <- intersect(colnames(body_dtm), colnames(title_dtm))
+title_body_dtm[,common_features] <- body_dtm[,common_features]+ title_dtm[,common_features]
+title_only_features <- setdiff(colnames(title_dtm), colnames(body_dtm))
+title_body_dtm <- cbind(title_body_dtm, title_dtm[,title_only_features])
+```
+
+### Naive Bayes Classifier as Base line model
+
+```{r}
+nb_body_tb <- naiveBayes(x=title_body_dtm[training_index, ] , y=as.factor(y_true[training_index]))
+predicted_nb_tb <- predict(nb_body, title_body_dtm[-training_index, ])
+accuracy_nb_tb <- sum(y_true[-training_index] == predicted_nb_tb)/ length(predicted_nb_tb)
+accuracy_nb_tb
+```
+
+The accuracy of the Naive Bayes classifier does not improve or changes even if we change the features. Let's try the other models, whether combining feature matrix improves their accuracy or not.
+
+### Logistic Regression Classifier 
+
+```{r}
+glm_fit_title_body <- glmnet(x=title_body_dtm[training_index, ] , y=y_true[training_index], family = "binomial")
+predicted_glm_tb <- predict(glm_fit_title_body, title_body_dtm[-training_index, ], type = "class")
+accuracy_glm_tb <- sum(y_true[-training_index] == predicted_glm_tb)/ length(predicted_glm_tb)
+accuracy_glm_tb 
+```
+The logistic regression performs better on combined feature matrix than the other  logistic regression classifers of title or body matrix individually. It seems that combining features improves the accuracy of the model.
+Let's check the accuracy of our last model of this project on the combined feature matrix.
+
+### Random Forest Classifier 
+```{r}
+set.seed(123)
+rf_tb <- randomForest(x=title_body_dtm[training_index, ], y=as.factor(y_true[training_index]))
+predicted_rf_tb <- predict(rf_tb, newdata=title_body_dtm[-training_index, ])
+accuracy_rf_tb <- sum(y_true[-training_index] == predicted_rf_tb)/ length(predicted_rf_tb)
+accuracy_rf_tb 
+```
+We observed that we got `80%` accurate results on the test dataset for Random Forest Classifier on combined feature matrix. We conclude that this model is best classifcation model in our analysis that can categorise the real and fake news with maximum accuracy.
+
+
+
+
+
+# CONCLUSION
+Summing up with final words, analyzing text data is a little challenging than numeric data. We performed following tasks in this project,
+
+1. We performed detailed exploratory data analysis on the real and fake news of buzzfeed dataset. We generated multiple plots of all variables for both news category. 
+
+2. We analysed unigrams and bigrams and get some interesting words and phrases which are associated with fake news and included in the title or body of the news. 
+However, we acknowledge that some phrase/bigrams should be cleaned but, we think that in this kind of analysis removing stop words and stemming might not be a good idea as we might loose some langauge information. There are some common words and phrase which might be associated with a particular type of news report and might be used to manipulate the language of title or body of news.That's why we did not cleaned the text in bigrams analysis. 
+
+3. We build a binary classifiers that classify fake news and real news on the basis of terms (unigrams) appears in the title,body or both of the news article. We will use three different classifiers logistic regression, random forest, Naive-Bayes classifier to detect fake news.
+
+4. The Naive-Bayes classifier is our baseline model and the Random Forest is the best model for this analysis with most accurate results of classification. However, the accuracy of logistic regression classfier also improves with combined feature matrix.The last `Random Forest classifier` achieved maximum accuracy of `80%` with `combined feature matrix` of `title and body` dtm.
+
+5. We can further train models by using bigrams and other features like sources, movies, images to check the effect on the accuracy of models and to analyze how can we detect the fake news by other features.
+
+
+
+
+
+
+
